@@ -1,31 +1,53 @@
-#This file will need to use the DataManager,FlightSearch, FlightData, NotificationManager classes to achieve the program
-# requirements.
+from datetime import datetime, timedelta
 from data_manager import DataManager
+from flight_search import FlightSearch
 from notification_manager import NotificationManager
-from pprint import pprint
+
+
+ORIGIN_CITY_IATA = "LON"
 
 data_manager = DataManager()
+flight_search = FlightSearch()
+notification_manager = NotificationManager()
+
 sheet_data = data_manager.get_destination_data()
+email_data = data_manager.get_emails()
 
-if sheet_data[0]["iataCode"] == '':
-    from flight_search import FlightSearch
-    flight_search = FlightSearch()
-    for row in sheet_data:
-        row["iataCode"] = flight_search.find_iata_code(row["city"])
+if sheet_data[0]["iataCode"] == "":
+    city_names = [row["city"] for row in sheet_data]
+    data_manager.city_codes = flight_search.get_destination_codes(city_names)
+    data_manager.update_destination_codes()
+    sheet_data = data_manager.get_destination_data()
 
-data_manager.destination_data = sheet_data
-data_manager.update_iata_code()
+destinations = {
+    data["iataCode"]: {
+        "id": data["id"],
+        "city": data["city"],
+        "price": data["lowestPrice"]
+    } for data in sheet_data}
 
-for row in sheet_data:
-    from flight_search import FlightSearch
-    flight_search = FlightSearch()
-    flight_search.find_flights(row["iataCode"])
-    if flight_search.price < sheet_data[0]["lowestPrice"]:
-        notification_manager = NotificationManager()
-        notification_manager.send_message(flight_search.price, flight_search.departure_airport, flight_search.departure_city,
-                                      flight_search.arrival_airport, flight_search.arrival_city, flight_search.out_date, flight_search.return_date)
-    else:
-        print("No good deal")
-    # print(f"{flight_search.arrival_city} - {flight_search.arrival_airport}: £{flight_search.price}")
+tomorrow = datetime.now() + timedelta(days=1)
+six_month_from_today = datetime.now() + timedelta(days=6 * 30)
 
+for destination_code in destinations:
+    flight = flight_search.check_flights(
+        ORIGIN_CITY_IATA,
+        destination_code,
+        from_time=tomorrow,
+        to_time=six_month_from_today
+    )
+    if flight is None:
+        continue
 
+    if flight.price < destinations[destination_code]["price"]:
+        message = f"Low price alert! Only £{flight.price} to fly from {flight.origin_city}-{flight.origin_airport} to {flight.destination_city}-{flight.destination_airport}, from {flight.out_date} to {flight.return_date}."
+
+        ######################
+        if flight.stop_overs > 0:
+            message += f"\nFlight has {flight.stop_overs} stop over, via {flight.via_city}."
+            print(message)
+        #######################
+        google_flights_url = f"https://www.google.co.uk/flights?hl=en#flt={flight.origin_airport}.{flight.destination_airport}.{flight.out_date}*{flight.destination_airport}.{flight.origin_airport}.{flight.return_date}"
+        notification_manager.send_sms(message)
+        email_addr = [row["email"] for row in email_data]
+        notification_manager.send_emails(message, google_flights_url, email_addr)
